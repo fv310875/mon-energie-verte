@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mon Énergie Verte – Simulateur Photovoltaïque PVGIS</title>
+  <link rel="stylesheet" href="[unpkg.com](https://unpkg.com/leaflet@1.9.3/dist/leaflet.css)"/>
+  <script src="[cdn.jsdelivr.net](https://cdn.jsdelivr.net/npm/chart.js)"></script>
+
+  <style>
+    :root {
+      --green:#00994d;
+      --light:#eaf4ff;
+      --soft:#f9f9f9;
+    }
+    body {
+      font-family: "Segoe UI", Roboto, sans-serif;
+      margin: 0; padding: 0;
+      background: var(--soft); color:#222;
+    }
+    header {
+      background: var(--green);
+      color:white; padding:12px 16px;
+      text-align:center;
+    }
+    h1 { margin:0; font-size:1.6em; }
+    main { padding:16px; max-width:900px; margin:auto; }
+    #map { height: 320px; margin-bottom:1em; border-radius:8px; }
+    table { border-collapse: collapse; width:100%; margin-top:10px; font-size:0.95em; }
+    th, td { border:1px solid #ccc; padding:6px; text-align:left; }
+    th { background: var(--light); }
+    input, select { font-size:1em; padding:4px; margin:4px 0; }
+    canvas { width:100% !important; max-width:700px; }
+    #fiche-container {
+      background:white;
+      border-radius:8px;
+      padding:12px;
+      box-shadow:0 2px 6px rgba(0,0,0,0.05);
+      margin-bottom:1em;
+    }
+    footer {
+      background:#eee; padding:10px; text-align:center;
+      font-size:0.8em; color:#555;
+    }
+
+    /* Responsive */
+    @media (max-width:600px){
+      header h1 { font-size:1.3em; }
+      th, td { font-size:0.85em; }
+      #map { height:260px; }
+    }
+  </style>
+
+  <script src="[unpkg.com](https://unpkg.com/leaflet@1.9.3/dist/leaflet.js)"></script>
+  <script type="module">
+    import mermaid from '[cdn.jsdelivr.net](https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs)';
+    mermaid.initialize({ startOnLoad:true, theme:'default' });
+  </script>
+</head>
+
+<body>
+  <header>
+    <h1>🌿 Mon Énergie Verte</h1>
+    <p style="margin:4px 0 0 0;">Simulateur photovoltaïque PVGIS</p>
+  </header>
+
+  <main>
+    <p><b>Étapes :</b> choisis les paramètres → clique sur la carte → découvre la production, la rentabilité et ton schéma électrique.</p>
+
+    <div id="map"></div>
+    <div id="result"></div>
+    <canvas id="graph"></canvas>
+
+    <div id="fiche-container">
+      <h3>⚙️ Fiche technique interactive</h3>
+      <label>Puissance :
+        <input type="number" id="puissance" value="3" step="0.1" min="0.5" style="width:80px;"> kWc
+      </label><br>
+      <label>Type :
+        <select id="type">
+          <option value="mono">Monocristallin 430 W</option>
+          <option value="poly">Polyc. 400 W</option>
+          <option value="thin">Couches minces 350 W</option>
+        </select>
+      </label><br>
+      <label>Batterie :
+        <input type="number" id="batt" value="5" step="1" min="0"> kWh
+      </label>
+
+      <table id="fiche">
+        <tr><th>Élément</th><th>Valeur</th><th>Commentaire</th></tr>
+        <tr><td>☀️ Puissance</td><td id="td-puissance"></td><td>Installée</td></tr>
+        <tr><td>📈 Production PVGIS</td><td id="td-production"></td><td>kWh/an selon lieu</td></tr>
+        <tr><td>🔋 Batterie utile</td><td id="td-batterie"></td><td>DoD 90 %</td></tr>
+        <tr><td>⚡ Autoconsommation</td><td id="td-auto"></td><td>Utilisation directe</td></tr>
+        <tr><td>💶 Coût estimé</td><td id="td-cout"></td><td>Total matériel</td></tr>
+        <tr><td>📅 ROI estimé</td><td id="td-roi"></td><td>Retour sur investissement</td></tr>
+      </table>
+    </div>
+
+    <h3>⚡ Schéma unifilaire – Système hybride</h3>
+    <div class="mermaid">
+    flowchart LR
+      A([☀️ PV]) -->|DC| B[Protection DC]
+      B --> C[Onduleur hybride ⚙️]
+      C -->|↔ DC| D[Batterie 🔋]
+      C -->|AC| E[Tableau Maison 🏠]
+      E --> F[Compteur Linky 📈]
+      F --> G[(Réseau EDF 🔌)]
+      classDef pv fill:#fff7d6,stroke:#ffcc00,color:#604800;
+      classDef batt fill:#eaffea,stroke:#66cc66,color:#003300;
+      classDef grid fill:#ddeeff,stroke:#6699ff,color:#003366;
+      class A,B,C pv; class D batt; class F,G grid;
+    </div>
+  </main>
+
+  <footer>
+    © 2026 – <b>Mon Énergie Verte</b> • développé par Frédéric • Données : PVGIS (Commission UE)
+  </footer>
+
+  <script>
+    const map = L.map('map').setView([46.5, 2], 6);
+    L.tileLayer('[{s}.tile.openstreetmap.org](https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png)',{
+      attribution:'&copy; OpenStreetMap'
+    }).addTo(map);
+
+    let marker, chart;
+
+    map.on('click', async (e)=>{
+      const { lat, lng } = e.latlng;
+      if (marker) map.removeLayer(marker);
+      marker = L.marker([lat,lng]).addTo(map);
+
+      const puissance=parseFloat(document.getElementById('puissance').value||3);
+      const r=await fetch(`[re.jrc.ec.europa.eu](https://re.jrc.ec.europa.eu/api/v5_2/PVcalc?lat=${lat}&lon=${lng}&peakpower=${puissance}&loss=14&angle=30&aspect=0&outputformat=json)`);
+      const data=await r.json();
+      const annual=data.outputs.totals.fixed.E_y;
+      updateFichePVGIS(annual);
+      drawGraph(annual);
+    });
+
+    function updateFichePVGIS(prodPVGIS){
+      const type=document.getElementById('type').value;
+      const batt=parseFloat(document.getElementById('batt').value);
+      const puissance=parseFloat(document.getElementById('puissance').value);
+      const coutKw={mono:1800,poly:1700,thin:1500};
+      const prod=prodPVGIS||puissance*1200;
+      const coutTotal=puissance*coutKw[type]+batt*800;
+      const auto=batt>0?0.6:0.45;
+      const economieAn=prod*auto*0.25;
+      const roi=(coutTotal/economieAn).toFixed(1);
+
+      document.getElementById('td-puissance').innerText=`${puissance.toFixed(1)} kWc (${type})`;
+      document.getElementById('td-production').innerText=`${prod.toLocaleString('fr-FR')} kWh/an`;
+      document.getElementById('td-batterie').innerText=`${(batt*0.9).toFixed(1)} kWh utiles`;
+      document.getElementById('td-auto').innerText=`${(auto*100).toFixed(0)} %`;
+      document.getElementById('td-cout').innerText=`${coutTotal.toLocaleString('fr-FR')} €`;
+      document.getElementById('td-roi').innerText=`${roi} ans`;
+    }
+
+    function drawGraph(annual){
+      const batt=parseFloat(document.getElementById('batt').value);
+      const auto=batt>0?0.6:0.45;
+      const ctx=document.getElementById('graph').getContext('2d');
+      if(chart) chart.destroy();
+      const flux=[]; let cumul=0;
+      for(let n=1;n<=25;n++){
+        const prod_n=annual*Math.pow(1-0.005,n-1);
+        const gain=prod_n*auto*0.25; cumul+=gain; flux.push(cumul);
+      }
+      chart=new Chart(ctx,{
+        type:'line',
+        data:{labels:Array.from({length:25},(_,i)=>"Année "+(i+1)),
+        datasets:[{label:"Cumul économies (€)",data:flux,borderColor:varColor(),fill:false}]},
+        options:{plugins:{legend:{position:'bottom'}}}
+      });
+    }
+
+    function varColor(){return getComputedStyle(document.documentElement)
+      .getPropertyValue('--green')||'#00994d';}
+
+    updateFichePVGIS();
+  </script>
+</body>
+</html>
