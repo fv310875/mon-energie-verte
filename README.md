@@ -1,2 +1,146 @@
 # mon-energie-verte
 Simulateur photovoltaïque PVGIS interactif
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Simulateur PVGIS + Rentabilité + Export</title>
+  <link rel="stylesheet" href="[unpkg.com](https://unpkg.com/leaflet@1.9.3/dist/leaflet.css)"/>
+  <script src="[cdn.jsdelivr.net](https://cdn.jsdelivr.net/npm/chart.js)"></script>
+  <script src="[cdnjs.cloudflare.com](https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js)"></script>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    #map { height: 400px; margin-bottom: 1em; }
+    #buttons { margin-top: 1em; }
+    button { margin-right: 10px; padding: 6px 10px; }
+    canvas { max-width: 700px; }
+  </style>
+</head>
+<body>
+  <h2>☀️ Simulateur Photovoltaïque PVGIS – Rentabilité sur 25 ans</h2>
+  <p>Clique sur ta toiture sur la carte pour lancer la simulation.</p>
+  <div id="map"></div>
+  <div id="result"></div>
+  <canvas id="graph"></canvas>
+  <div id="buttons">
+    <button id="btn-pdf">📄 Export PDF</button>
+    <button id="btn-csv">📊 Export CSV</button>
+  </div>
+  <script src="[unpkg.com](https://unpkg.com/leaflet@1.9.3/dist/leaflet.js)"></script>
+  <script>
+    const map = L.map('map').setView([46.5, 2], 6);
+    L.tileLayer('[{s}.tile.openstreetmap.org](https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png)', {
+      attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+    let marker, chart, latestData = null;
+    map.on('click', async (e) => {
+      const { lat, lng } = e.latlng;
+      if (marker) map.removeLayer(marker);
+      marker = L.marker([lat, lng]).addTo(map);
+      // --- API PVGIS ---
+      const r = await fetch(`[re.jrc.ec.europa.eu](https://re.jrc.ec.europa.eu/api/v5_2/PVcalc?lat=${lat}&lon=${lng}&peakpower=3.0&loss=14&angle=30&aspect=0&outputformat=json)`);
+      const data = await r.json();
+      const annual = data.outputs.totals.fixed.E_y;
+      // --- Paramètres financiers ---
+      const P = 3;
+      const autocons = 0.45;
+      const prix_kwh = 0.25;
+      const r_oa = 0.13;
+      const CAPEX = 6000;
+      const prime_auto = 370;
+      const degrad = 0.005;
+      const inflation = 0.02;
+      const annees_eval = 25;
+      let flux_total = 0;
+      let flux_cumule = [];
+      let labels = [];
+      let cumul = 0;
+      const prime = prime_auto * P;
+      for (let n = 1; n <= annees_eval; n++) {
+        const prod_n = annual * Math.pow(1 - degrad, n - 1);
+        const R_auto = prod_n * autocons * prix_kwh * Math.pow(1 + inflation, n - 1);
+        const R_oa = prod_n * (1 - autocons) * r_oa;
+        const flux = R_auto + R_oa;
+        cumul += flux;
+        flux_total += flux;
+        flux_cumule.push({ annee: n, cumul: cumul + prime });
+        labels.push("Année " + n);
+      }
+      const ROI = ((flux_total + prime - CAPEX) / CAPEX * 100).toFixed(1);
+      const payback = (CAPEX / (flux_total / annees_eval)).toFixed(1);
+      latestData = { lat, lng, annual, flux_cumule, CAPEX, ROI, payback, prime };
+      document.getElementById("result").innerHTML = `
+        <p><b>Coordonnées :</b> ${lat.toFixed(3)}, ${lng.toFixed(3)}</p>
+        <p><b>Production PVGIS :</b> ${annual.toFixed(0)} kWh/an</p>
+        <p><b>Revenus cumulés 25 ans :</b> ${(flux_total + prime).toFixed(0)} €</p>
+        <p><b>Investissement :</b> ${CAPEX} €</p>
+        <p><b>ROI global :</b> ${ROI} % sur 25 ans</p>
+        <p><b>Retour sur investissement moyen :</b> ${payback} ans</p>
+      `;
+      const ctx = document.getElementById('graph').getContext('2d');
+      if (chart) chart.destroy();
+      chart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [
+            {
+              label: "Cumul revenus + prime (€)",
+              data: flux_cumule.map(d => d.cumul),
+              borderColor: 'green',
+              fill: false
+            },
+            {
+              label: "Investissement initial (€)",
+              data: Array(annees_eval).fill(CAPEX),
+              borderColor: 'red',
+              borderDash: [5,5],
+              fill: false
+            }
+          ]
+        },
+        options: {
+          plugins: { legend: { position: 'bottom' } },
+          scales: {
+            y: { title: { display: true, text: "€ cumulés" } },
+            x: { title: { display: true, text: "Années" } }
+          }
+        }
+      });
+    });
+    // --- Export PDF ---
+    document.getElementById('btn-pdf').onclick = async () => {
+      if (!latestData) return alert("Simule d'abord un site sur la carte !");
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF();
+      doc.text("Simulation PVGIS - Résultats", 15, 15);
+      doc.text(`Coordonnées: ${latestData.lat.toFixed(3)}, ${latestData.lng.toFixed(3)}`, 15, 25);
+      doc.text(`Production: ${latestData.annual.toFixed(0)} kWh/an`, 15, 35);
+      doc.text(`Investissement: ${latestData.CAPEX} €`, 15, 45);
+      doc.text(`ROI sur 25 ans: ${latestData.ROI} %`, 15, 55);
+      doc.text(`Retour sur investissement: ${latestData.payback} ans`, 15, 65);
+      // ajoute le graphique
+      const chartCanvas = document.getElementById('graph');
+      const imgData = chartCanvas.toDataURL('image/png', 1.0);
+      doc.addImage(imgData, 'PNG', 15, 75, 180, 100);
+      doc.save('simulation_pv.pdf');
+    };
+    // --- Export CSV ---
+    document.getElementById('btn-csv').onclick = () => {
+      if (!latestData) return alert("Lance une simulation avant d'exporter !");
+      let csv = "Année;Revenus cumulés (€)\n";
+      latestData.flux_cumule.forEach(d => {
+        csv += `${d.annee};${d.cumul.toFixed(0)}\n`;
+      });
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'simulation_pv.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+    };
+  </script>
+</body>
+</html>
