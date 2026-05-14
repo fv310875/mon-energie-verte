@@ -1,1 +1,41 @@
-
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Simulateur Solaire PVGIS</title>
+  <link rel="stylesheet" href="[unpkg.com](https://unpkg.com/leaflet@1.9.3/dist/leaflet.css)"/>
+  <style>
+    #map { height: 500px; margin-bottom: 1em; }
+  </style>
+</head>
+<body>
+  <h2>Simulation Photovoltaïque (PVGIS)</h2>
+  <div id="map"></div>
+  <div id="result"></div>
+  <script src="[unpkg.com](https://unpkg.com/leaflet@1.9.3/dist/leaflet.js)"></script>
+  <script>
+    const map = L.map('map').setView([46.5, 2], 6); // centre France
+    L.tileLayer('[{s}.tile.openstreetmap.org](https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png)', {
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+    let marker;
+    map.on('click', async (e) => {
+      const { lat, lng } = e.latlng;
+      if (marker) map.removeLayer(marker);
+      marker = L.marker([lat, lng]).addTo(map);
+      const response = await fetch(`[re.jrc.ec.europa.eu](https://re.jrc.ec.europa.eu/api/v5_2/PVcalc?lat=${lat}&lon=${lng}&peakpower=3.0&loss=14&angle=30&aspect=0&outputformat=json)`);
+      const data = await response.json();
+      const annual = data.outputs.totals.fixed.E_y; // kWh/an
+      const revenu = (annual * 0.13).toFixed(0); // 0,13 €/kWh autoconsommation
+      const investissement = 6000; // € pour 3 kWc
+      const rentab = ((revenu / investissement) * 100).toFixed(1);
+      document.getElementById("result").innerHTML =
+        `<p><b>Coordonnées :</b> ${lat.toFixed(3)}, ${lng.toFixed(3)}</p>
+         <p><b>Production annuelle :</b> ${annual} kWh</p>
+         <p><b>Revenus/an :</b> ~${revenu} €</p>
+         <p><b>Investissement :</b> ${investissement} €</p>
+         <p><b>Rentabilité brute :</b> ${rentab}% par an (~${(100/rentab).toFixed(1)} ans)</p>`;
+    });
+  </script>
+</body>
+</html>
